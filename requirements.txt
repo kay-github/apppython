@@ -1,5 +1,6 @@
-fastapi
+﻿fastapi
 uvicorn[standard]
 pandas
-numpy
-python-multipart
+requests
+plotly
+akshare
