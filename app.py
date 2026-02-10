@@ -1,4 +1,5 @@
-﻿import time
+import time
+import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import requests
@@ -250,14 +251,7 @@ def _build_chart(df: pd.DataFrame):
     )
 
     mean_discount = df["discount"].mean()
-    fig.add_hline(
-        y=mean_discount,
-        line_dash="dash",
-        line_color="#f04d3a",
-        line_width=1.4,
-        annotation_text=f"均值 {mean_discount:.2f}折",
-        annotation_position="right",
-    )
+    fig.add_hline(y=mean_discount, line_dash="dash", line_color="#f04d3a", line_width=1.4)
 
     max_idx = df["discount"].idxmax()
     min_idx = df["discount"].idxmin()
@@ -272,6 +266,7 @@ def _build_chart(df: pd.DataFrame):
             text=[f"{df['discount'].max():.2f}折"],
             textposition="top center",
             hoverinfo="skip",
+            showlegend=False,
         )
     )
 
@@ -285,6 +280,7 @@ def _build_chart(df: pd.DataFrame):
             text=[f"{df['discount'].min():.2f}折"],
             textposition="bottom center",
             hoverinfo="skip",
+            showlegend=False,
         )
     )
 
@@ -297,44 +293,89 @@ def _build_chart(df: pd.DataFrame):
         "近1年": df.index[0],
     }
 
-    buttons = []
+    period_details = {}
+    period_cards = {}
     for label, start_date in periods.items():
         period_df = df[df.index >= start_date]
-        if len(period_df) > 0:
-            stats = (
-                f"<b>统计（{label}）</b><br>"
-                f"最新 {period_df['discount'].iloc[-1]:.2f}折<br>"
-                f"最高 {period_df['discount'].max():.2f}折<br>"
-                f"最低 {period_df['discount'].min():.2f}折<br>"
-                f"均值 {period_df['discount'].mean():.2f}折"
-            )
-        else:
-            stats = "暂无数据"
+        if len(period_df) == 0:
+            continue
+        p_min = period_df["discount"].min()
+        p_max = period_df["discount"].max()
+        latest_val = period_df["discount"].iloc[-1]
+        max_idx_period = period_df["discount"].idxmax()
+        min_idx_period = period_df["discount"].idxmin()
+        pad = max((p_max - p_min) * 0.2, 0.15)
+        period_details[label] = {
+            "start": start_date,
+            "y_range": [max(0, p_min - pad), p_max + pad],
+        }
+        period_cards[label] = {
+            "period": label,
+            "latest": f"{latest_val:.2f}折",
+            "latest_date": str(period_df.index[-1])[:10],
+            "highest": f"{p_max:.2f}折",
+            "highest_date": str(max_idx_period)[:10],
+            "lowest": f"{p_min:.2f}折",
+            "lowest_date": str(min_idx_period)[:10],
+        }
 
+    if not period_details:
+        fallback_min = df["discount"].min()
+        fallback_max = df["discount"].max()
+        fallback_latest = df["discount"].iloc[-1]
+        fallback_latest_date = str(df.index[-1])[:10]
+        fallback_max_idx = df["discount"].idxmax()
+        fallback_min_idx = df["discount"].idxmin()
+        fallback_pad = max((fallback_max - fallback_min) * 0.2, 0.15)
+        period_details["近1年"] = {
+            "start": df.index[0],
+            "y_range": [max(0, fallback_min - fallback_pad), fallback_max + fallback_pad],
+        }
+        period_cards["近1年"] = {
+            "period": "近1年",
+            "latest": f"{fallback_latest:.2f}折",
+            "latest_date": fallback_latest_date,
+            "highest": f"{fallback_max:.2f}折",
+            "highest_date": str(fallback_max_idx)[:10],
+            "lowest": f"{fallback_min:.2f}折",
+            "lowest_date": str(fallback_min_idx)[:10],
+        }
+
+    default_label = "近半年" if "近半年" in period_details else next(iter(period_details.keys()))
+    default_detail = period_details[default_label]
+
+    buttons = []
+    active_idx = 0
+    for label in periods.keys():
+        if label not in period_details:
+            continue
+        detail = period_details[label]
+        if label == default_label:
+            active_idx = len(buttons)
         buttons.append(
             dict(
                 label=label,
                 method="relayout",
                 args=[{
-                    "xaxis.range": [start_date, end_date],
-                    "annotations[0].text": stats,
+                    "xaxis.range": [detail["start"], end_date],
+                    "yaxis.range": detail["y_range"],
                 }],
             )
         )
 
     fig.update_layout(
-        xaxis_title="日期",
-        yaxis_title="折扣（折）",
+        xaxis=dict(title="日期", range=[default_detail["start"], end_date]),
+        yaxis=dict(title="折扣（折）", range=default_detail["y_range"]),
         hovermode="x unified",
         showlegend=True,
-        legend=dict(yanchor="top", y=0.99, xanchor="right", x=0.99),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
         updatemenus=[
             dict(
                 type="buttons",
                 direction="right",
-                active=3,
+                active=active_idx,
                 x=0.5,
-                y=1.06,
+                y=1.14,
                 xanchor="center",
                 yanchor="bottom",
                 buttons=buttons,
@@ -345,39 +386,13 @@ def _build_chart(df: pd.DataFrame):
                 pad=dict(r=6, t=6, l=6, b=6),
             )
         ],
-        annotations=[
-            dict(
-                x=0.02,
-                y=0.98,
-                xref="paper",
-                yref="paper",
-                text=(
-                    f"<b>统计（近半年）</b><br>"
-                    f"最新 {df['discount'].iloc[-1]:.2f}折<br>"
-                    f"最高 {df['discount'].max():.2f}折<br>"
-                    f"最低 {df['discount'].min():.2f}折<br>"
-                    f"均值 {df['discount'].mean():.2f}折"
-                ),
-                showarrow=False,
-                font=dict(size=12),
-                align="left",
-                bgcolor="rgba(255, 255, 224, 0.9)",
-                bordercolor="#c8d6f0",
-                borderwidth=1,
-                borderpad=8,
-            )
-        ],
         template="plotly_white",
-        width=1200,
-        height=680,
-        margin=dict(t=140, b=50),
+        autosize=True,
+        height=640,
+        margin=dict(t=122, b=55, l=52, r=28),
     )
 
-    y_min = df["discount"].min() * 0.9
-    y_max = df["discount"].max() * 1.1
-    fig.update_yaxes(range=[y_min, y_max])
-
-    return fig
+    return fig, period_cards, default_label
 
 
 def _build_page():
@@ -443,8 +458,33 @@ def _build_page():
     df["ratio"] = df["xys_mv"] / df["zjxc_mv"]
     df["discount"] = df["ratio"] * 10
 
-    fig = _build_chart(df)
-    chart_html = fig.to_html(full_html=False, include_plotlyjs="cdn")
+    fig, period_cards, default_period = _build_chart(df)
+    chart_config = {
+        "responsive": True,
+        "displaylogo": False,
+        "modeBarButtonsToRemove": [
+            "zoom2d",
+            "pan2d",
+            "select2d",
+            "lasso2d",
+            "zoomIn2d",
+            "zoomOut2d",
+            "autoScale2d",
+            "toImage",
+            "toggleSpikelines",
+        ],
+    }
+    chart_html = fig.to_html(full_html=False, include_plotlyjs="cdn", config=chart_config)
+    default_card = period_cards.get(default_period, {})
+    period_cards_json = json.dumps(period_cards, ensure_ascii=False)
+    default_period_text = default_card.get("period", default_period)
+    default_latest = default_card.get("latest", "--")
+    default_latest_date = default_card.get("latest_date", "--")
+    default_highest = default_card.get("highest", "--")
+    default_highest_date = default_card.get("highest_date", "--")
+    default_lowest = default_card.get("lowest", "--")
+    default_lowest_date = default_card.get("lowest_date", "--")
+    default_period_js = json.dumps(default_period, ensure_ascii=False)
 
     realtime_note = realtime_status
     generated_at = end_date.strftime("%Y-%m-%d %H:%M:%S")
@@ -456,32 +496,208 @@ def _build_page():
 <html>
 <head>
   <meta charset=\"utf-8\" />
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\" />
   <title>新易盛 / 中际旭创 市值比例图</title>
   <style>
-    body {{ font-family: \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif; margin: 16px 20px; }}
-    .header {{ display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }}
-    .title {{ font-size: 22px; font-weight: 700; color: #1f2a44; }}
-    .meta-row {{ margin-top: 6px; color: #6b7280; font-size: 12.5px; display: flex; gap: 12px; flex-wrap: wrap; }}
-    .chart-wrap {{ position: relative; width: 1200px; max-width: 100%; }}
-    .btn {{ position: absolute; top: 52px; right: 6px; z-index: 5; padding: 6px 10px; border: 1px solid #c8d6f0; background: #eef3ff; color: #2b3b55; cursor: pointer; border-radius: 6px; font-size: 12px; }}
-    .btn:hover {{ background: #e3ecff; }}
+    :root {{
+      --bg: linear-gradient(150deg, #f4f8ff 0%, #eef3ff 46%, #f7fbff 100%);
+      --panel: #ffffff;
+      --title: #172445;
+      --muted: #5e6a7d;
+      --line: #cfd8ea;
+      --btn-bg: #eef3ff;
+      --btn-bg-hover: #e3ecff;
+      --btn-text: #2b3b55;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      padding: 14px;
+      font-family: \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif;
+      color: var(--title);
+      background: var(--bg);
+    }}
+    .page {{
+      width: min(1360px, 100%);
+      margin: 0 auto;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px;
+      box-shadow: 0 8px 28px rgba(17, 32, 67, 0.08);
+    }}
+    .header {{ display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }}
+    .title {{ font-size: 30px; font-weight: 800; letter-spacing: 0.2px; color: var(--title); }}
+    .meta-row {{ margin-top: 8px; color: var(--muted); font-size: 12.8px; line-height: 1.5; display: flex; gap: 8px 14px; flex-wrap: wrap; }}
+    .summary-panel {{
+      margin-top: 12px;
+      border: 1px solid #d2dcf3;
+      border-radius: 12px;
+      background: linear-gradient(180deg, #f9fbff 0%, #f2f6ff 100%);
+      padding: 10px 12px;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+    }}
+    .summary-top {{ display: flex; align-items: center; justify-content: space-between; gap: 8px; }}
+    .summary-title {{ font-size: 13px; color: #3e4c67; font-weight: 700; }}
+    .summary-period {{ font-size: 12px; color: #29406c; background: #e8efff; border: 1px solid #c7d7fa; border-radius: 999px; padding: 3px 10px; font-weight: 700; }}
+    .summary-grid {{ margin-top: 8px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }}
+    .summary-item {{ background: #ffffff; border: 1px solid #d8e1f5; border-radius: 10px; padding: 8px; }}
+    .summary-k {{ font-size: 12px; color: #66758f; font-weight: 700; }}
+    .summary-v {{ margin-top: 3px; font-size: 21px; line-height: 1.15; font-weight: 800; letter-spacing: 0.2px; }}
+    .summary-v.latest {{ color: #2f6fed; }}
+    .summary-v.highest {{ color: #1f9d52; }}
+    .summary-v.lowest {{ color: #d74343; }}
+    .summary-d {{ margin-top: 2px; font-size: 11.5px; color: #73809a; }}
+    .chart-wrap {{ margin-top: 10px; width: 100%; min-height: 500px; }}
+    .btn {{ padding: 6px 10px; border: 1px solid #c8d6f0; background: var(--btn-bg); color: var(--btn-text); cursor: pointer; border-radius: 8px; font-size: 11.8px; font-weight: 600; white-space: nowrap; }}
+    .btn:hover {{ background: var(--btn-bg-hover); }}
+    .chart-wrap > div {{ width: 100% !important; }}
+    .js-plotly-plot, .plot-container {{ width: 100% !important; max-width: 100% !important; }}
+    .modebar {{ transform: scale(0.9); transform-origin: top right; }}
+
+    @media (max-width: 768px) {{
+      body {{ padding: 10px; }}
+      .page {{ border-radius: 12px; padding: 12px 10px; }}
+      .title {{ font-size: 24px; line-height: 1.3; max-width: 100%; }}
+      .meta-row {{ display: grid; grid-template-columns: 1fr; font-size: 12.8px; gap: 2px; }}
+      .summary-panel {{ padding: 10px; }}
+      .summary-title {{ font-size: 12.5px; }}
+      .summary-period {{ font-size: 11.5px; padding: 2px 8px; }}
+      .summary-grid {{ gap: 6px; }}
+      .summary-item {{ padding: 7px; }}
+      .summary-k {{ font-size: 11.5px; }}
+      .summary-v {{ font-size: 18px; }}
+      .summary-d {{ font-size: 10.5px; }}
+      .header {{ align-items: flex-start; }}
+      .btn {{ width: auto; text-align: center; font-size: 11.5px; padding: 6px 10px; border-radius: 7px; }}
+      .chart-wrap {{ min-height: 430px; }}
+      .modebar {{ transform: scale(0.84); transform-origin: top right; }}
+    }}
   </style>
 </head>
 <body>
-  <div class=\"header\">
-    <div class=\"title\">新易盛 / 中际旭创 市值比例图</div>
+  <div class=\"page\">
+    <div class=\"header\">
+      <div class=\"title\">新易盛 / 中际旭创 市值比例图</div>
+      <button class=\"btn\" onclick=\"location.href='/?refresh=1&t=' + Date.now()\">刷新获取最新数据</button>
+    </div>
+    <div class=\"meta-row\">
+      <div>数据日期：{data_date}</div>
+      <div>使用实时行情：{realtime_note}</div>
+      <div>生成时间：{generated_at}</div>
+      <div>日线来源：{data_source}</div>
+      <div>实时来源：{realtime_source}</div>
+    </div>
+    <div class=\"summary-panel\">
+      <div class=\"summary-top\">
+        <div class=\"summary-title\">周期统计（固定）</div>
+        <div id=\"periodLabel\" class=\"summary-period\">{default_period_text}</div>
+      </div>
+      <div class=\"summary-grid\">
+        <div class=\"summary-item\">
+          <div class=\"summary-k\">最新</div>
+          <div id=\"latestVal\" class=\"summary-v latest\">{default_latest}</div>
+          <div id=\"latestDate\" class=\"summary-d\">{default_latest_date}</div>
+        </div>
+        <div class=\"summary-item\">
+          <div class=\"summary-k\">最高</div>
+          <div id=\"highestVal\" class=\"summary-v highest\">{default_highest}</div>
+          <div id=\"highestDate\" class=\"summary-d\">{default_highest_date}</div>
+        </div>
+        <div class=\"summary-item\">
+          <div class=\"summary-k\">最低</div>
+          <div id=\"lowestVal\" class=\"summary-v lowest\">{default_lowest}</div>
+          <div id=\"lowestDate\" class=\"summary-d\">{default_lowest_date}</div>
+        </div>
+      </div>
+    </div>
+    <div class=\"chart-wrap\">
+      {chart_html}
+    </div>
   </div>
-  <div class=\"meta-row\">
-    <div>数据日期：{data_date}</div>
-    <div>使用实时行情：{realtime_note}</div>
-    <div>生成时间：{generated_at}</div>
-    <div>日线来源：{data_source}</div>
-    <div>实时来源：{realtime_source}</div>
-  </div>
-  <div class=\"chart-wrap\">
-    <button class=\"btn\" onclick=\"location.href='/?refresh=1&t=' + Date.now()\">刷新获取最新数据</button>
-    {chart_html}
-  </div>
+  <script>
+    (function () {{
+      var periodStatsMap = {period_cards_json};
+      var defaultPeriod = {default_period_js};
+
+      function updateSummaryCard(label) {{
+        var stat = periodStatsMap[label];
+        if (!stat) return;
+        document.getElementById('periodLabel').textContent = stat.period || label;
+        document.getElementById('latestVal').textContent = stat.latest || '--';
+        document.getElementById('latestDate').textContent = stat.latest_date || '--';
+        document.getElementById('highestVal').textContent = stat.highest || '--';
+        document.getElementById('highestDate').textContent = stat.highest_date || '--';
+        document.getElementById('lowestVal').textContent = stat.lowest || '--';
+        document.getElementById('lowestDate').textContent = stat.lowest_date || '--';
+      }}
+
+      function relayoutForScreen() {{
+        var gd = document.querySelector('.js-plotly-plot');
+        if (!gd || !window.Plotly) return;
+        var wrap = document.querySelector('.chart-wrap');
+        var targetWidth = wrap ? Math.max(320, wrap.clientWidth - 2) : Math.max(320, gd.clientWidth);
+        var isMobile = window.matchMedia('(max-width: 768px)').matches;
+        var mobileUpdates = {{
+          'width': targetWidth,
+          'height': 470,
+          'margin.t': 118,
+          'margin.r': 10,
+          'margin.l': 42,
+          'margin.b': 52,
+          'legend.orientation': 'h',
+          'legend.x': 0,
+          'legend.y': 1.02,
+          'updatemenus[0].x': 0.5,
+          'updatemenus[0].y': 1.09,
+          'updatemenus[0].xanchor': 'center',
+          'updatemenus[0].direction': 'right',
+          'updatemenus[0].font.size': 10
+        }};
+        var desktopUpdates = {{
+          'width': targetWidth,
+          'height': 640,
+          'margin.t': 122,
+          'margin.r': 28,
+          'margin.l': 52,
+          'margin.b': 55,
+          'legend.orientation': 'h',
+          'legend.x': 0,
+          'legend.y': 1.02,
+          'updatemenus[0].x': 0.5,
+          'updatemenus[0].y': 1.1,
+          'updatemenus[0].xanchor': 'center',
+          'updatemenus[0].direction': 'right',
+          'updatemenus[0].font.size': 12
+        }};
+        window.Plotly.relayout(gd, isMobile ? mobileUpdates : desktopUpdates);
+        window.Plotly.Plots.resize(gd);
+      }}
+
+      function bindPeriodButton(gd) {{
+        if (!gd || gd.__periodBound) return;
+        gd.__periodBound = true;
+        gd.on('plotly_buttonclicked', function (event) {{
+          if (!event || !event.button || !event.button.label) return;
+          updateSummaryCard(event.button.label);
+        }});
+      }}
+
+      function init() {{
+        var gd = document.querySelector('.js-plotly-plot');
+        if (!gd || !window.Plotly) {{
+          window.setTimeout(init, 80);
+          return;
+        }}
+        bindPeriodButton(gd);
+        updateSummaryCard(defaultPeriod);
+        relayoutForScreen();
+      }}
+
+      window.addEventListener('load', init);
+      window.addEventListener('resize', relayoutForScreen);
+    }})();
+  </script>
 </body>
 </html>
 """
