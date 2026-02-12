@@ -1,6 +1,5 @@
-﻿fastapi
+fastapi
 uvicorn[standard]
 pandas
 requests
 plotly
-
