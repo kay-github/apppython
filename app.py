@@ -498,6 +498,7 @@ def _build_page():
   <meta charset=\"utf-8\" />
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\" />
   <title>新易盛 / 中际旭创 市值比例图</title>
+  <link rel=\"icon\" href=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='0.9em' font-size='90'%3E%F0%9F%93%88%3C/text%3E%3C/svg%3E\" />
   <style>
     :root {{
       --bg: linear-gradient(150deg, #f4f8ff 0%, #eef3ff 46%, #f7fbff 100%);
