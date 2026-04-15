@@ -799,6 +799,10 @@ def _build_page():
             updates[key] = periodLayout[key];
           }});
         }}
+        if (updates.height) {{
+          gd.style.height = updates.height + 'px';
+          if (wrap) wrap.style.minHeight = updates.height + 'px';
+        }}
         window.Plotly.relayout(gd, updates);
         window.Plotly.Plots.resize(gd);
       }}
