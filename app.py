@@ -16,15 +16,6 @@ app = FastAPI(title="市值比例图")
 ZJXC_CODE = "sz.300308"
 XYS_CODE = "sz.300502"
 
-# Market cap anchors (CNY 100 million) used to infer total shares.
-# Keep these aligned with the latest data date to reduce bias.
-ZJXC_MARKET_CAP = 6840
-XYS_MARKET_CAP = 3968
-
-# Optional explicit total shares (100 million shares). If set, they override anchors.
-ZJXC_SHARES = None
-XYS_SHARES = None
-
 USE_REALTIME = True
 FETCH_RETRY = 1
 RETRY_DELAY_SECONDS = 0
@@ -41,6 +32,31 @@ _PAGE_CACHE = {"ts": 0.0, "html": None}
 
 def _cn_now():
     return datetime.now(timezone(timedelta(hours=8)))
+
+
+def _http_get(url: str, **kwargs):
+    session = requests.Session()
+    session.trust_env = False
+    try:
+        return session.get(url, **kwargs)
+    finally:
+        session.close()
+
+
+def _to_positive_float(value, scale: float = 1.0):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if scale != 1.0:
+        number = number / scale
+    return number if number > 0 else None
+
+
+def _format_quote_time(value: str):
+    if not value or len(value) != 14 or not value.isdigit():
+        return None
+    return f"{value[:4]}-{value[4:6]}-{value[6:8]} {value[8:10]}:{value[10:12]}:{value[12:14]}"
 
 
 def _parse_code(code: str):
@@ -82,7 +98,7 @@ def _fetch_daily_close_from_em(code: str, start_date: str, end_date: str):
         "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
     }
     try:
-        resp = requests.get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=6)
+        resp = _http_get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=6)
         resp.raise_for_status()
         data = resp.json().get("data") or {}
         klines = data.get("klines") or []
@@ -116,7 +132,7 @@ def _fetch_daily_close_from_sina(code: str, start_date: str, end_date: str):
         "datalen": str(SINA_DATALEN),
     }
     try:
-        resp = requests.get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=6)
+        resp = _http_get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=6)
         resp.raise_for_status()
         data = resp.json()
         if not data:
@@ -154,74 +170,73 @@ def _fetch_daily_close(code: str, start_date: str, end_date: str):
     return None, "无"
 
 
-def _get_realtime_price_eastmoney(code: str):
+def _get_realtime_snapshot_eastmoney(code: str):
     secid = _to_eastmoney_secid(code)
     url = "https://push2.eastmoney.com/api/qt/stock/get"
-    params = {"secid": secid, "fields": "f43,f57,f58"}
+    params = {"secid": secid, "fields": "f43,f57,f58,f116,f117"}
     try:
-        resp = requests.get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=4)
+        resp = _http_get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=4)
         resp.raise_for_status()
         data = resp.json().get("data") or {}
-        price = data.get("f43")
-        if price is None:
+        price = _to_positive_float(data.get("f43"), scale=100.0)
+        total_market_cap = _to_positive_float(data.get("f116"), scale=100000000.0)
+        float_market_cap = _to_positive_float(data.get("f117"), scale=100000000.0)
+        if price is None or total_market_cap is None:
             return None
-        price = float(price)
-        if price > 1000:
-            price = price / 100.0
-        return price if price > 0 else None
+        return {
+            "price": price,
+            "total_market_cap": total_market_cap,
+            "float_market_cap": float_market_cap,
+            "total_shares": total_market_cap / price,
+            "float_shares": float_market_cap / price if float_market_cap is not None else None,
+            "quote_time": None,
+            "source": "东方财富实时",
+        }
     except Exception:
         return None
 
 
-def _get_realtime_price_sina(code: str):
-    symbol = _to_sina_symbol(code)
-    url = f"http://hq.sinajs.cn/list={symbol}"
-    try:
-        resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=4)
-        resp.raise_for_status()
-        text = resp.text
-        if "\"" not in text:
-            return None
-        raw = text.split('"', 1)[1].rsplit('"', 1)[0]
-        parts = raw.split(",")
-        if len(parts) < 4:
-            return None
-        price = float(parts[3])
-        return price if price > 0 else None
-    except Exception:
-        return None
-
-
-def _get_realtime_price_tencent(code: str):
+def _get_realtime_snapshot_tencent(code: str):
     symbol = _to_sina_symbol(code)
     url = f"https://qt.gtimg.cn/q={symbol}"
     try:
-        resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=4)
+        resp = _http_get(url, headers={"User-Agent": USER_AGENT}, timeout=4)
         resp.raise_for_status()
         text = resp.content.decode("gbk", errors="ignore")
         if "\"" not in text:
             return None
-        raw = text.split("\"", 1)[1].rsplit("\"", 1)[0]
+        raw = text.split('"', 1)[1].rsplit('"', 1)[0]
         parts = raw.split("~")
-        if len(parts) < 4:
+        if len(parts) <= 73:
             return None
-        price = float(parts[3])
-        return price if price > 0 else None
+        price = _to_positive_float(parts[3])
+        float_market_cap = _to_positive_float(parts[44])
+        total_market_cap = _to_positive_float(parts[45])
+        float_shares = _to_positive_float(parts[72], scale=100000000.0)
+        total_shares = _to_positive_float(parts[73], scale=100000000.0)
+        if price is None or total_market_cap is None:
+            return None
+        return {
+            "price": price,
+            "total_market_cap": total_market_cap,
+            "float_market_cap": float_market_cap,
+            "total_shares": total_shares,
+            "float_shares": float_shares,
+            "quote_time": _format_quote_time(parts[30] if len(parts) > 30 else ""),
+            "source": "腾讯实时",
+        }
     except Exception:
         return None
 
 
-def _get_realtime_price(code: str):
-    price = _get_realtime_price_eastmoney(code)
-    if price is not None:
-        return price, "东方财富"
-    price = _get_realtime_price_sina(code)
-    if price is not None:
-        return price, "新浪"
-    price = _get_realtime_price_tencent(code)
-    if price is not None:
-        return price, "腾讯"
-    return None, "无"
+def _get_realtime_snapshot(code: str):
+    snapshot = _get_realtime_snapshot_tencent(code)
+    if snapshot is not None:
+        return snapshot
+    snapshot = _get_realtime_snapshot_eastmoney(code)
+    if snapshot is not None:
+        return snapshot
+    return None
 
 
 def _build_chart(df: pd.DataFrame):
@@ -229,8 +244,8 @@ def _build_chart(df: pd.DataFrame):
     for idx, row in df.iterrows():
         text = (
             f"<b>日期: {idx.strftime('%Y-%m-%d')}</b><br>"
-            f"<b>中际旭创:</b> {row['zjxc_close']:.2f} / {row['zjxc_mv']:.0f}<br>"
-            f"<b>新易盛:</b> {row['xys_close']:.2f} / {row['xys_mv']:.0f}<br>"
+            f"<b>中际旭创:</b> {row['zjxc_close']:.2f} 元 / {row['zjxc_mv']:.2f} 亿<br>"
+            f"<b>新易盛:</b> {row['xys_close']:.2f} 元 / {row['xys_mv']:.2f} 亿<br>"
             f"<b>{row['discount']:.2f}折</b>"
         )
         hover_text.append(text)
@@ -421,42 +436,55 @@ def _build_page():
     today = end_date.date()
     rt_zjxc = None
     rt_xys = None
+    snapshot_zjxc = None
+    snapshot_xys = None
     rt_src_zjxc = "无"
     rt_src_xys = "无"
     realtime_status = "否"
     if USE_REALTIME:
         with ThreadPoolExecutor(max_workers=2) as executor:
-            fut_zjxc = executor.submit(_get_realtime_price, ZJXC_CODE)
-            fut_xys = executor.submit(_get_realtime_price, XYS_CODE)
-            rt_zjxc, rt_src_zjxc = fut_zjxc.result()
-            rt_xys, rt_src_xys = fut_xys.result()
-        if rt_zjxc is not None or rt_xys is not None:
-            last_zjxc = df["zjxc_close"].iloc[-1]
-            last_xys = df["xys_close"].iloc[-1]
-            new_zjxc = rt_zjxc if rt_zjxc is not None else last_zjxc
-            new_xys = rt_xys if rt_xys is not None else last_xys
-            df.loc[pd.to_datetime(today)] = [new_zjxc, new_xys]
+            fut_zjxc = executor.submit(_get_realtime_snapshot, ZJXC_CODE)
+            fut_xys = executor.submit(_get_realtime_snapshot, XYS_CODE)
+            snapshot_zjxc = fut_zjxc.result()
+            snapshot_xys = fut_xys.result()
+        if snapshot_zjxc is not None:
+            rt_zjxc = snapshot_zjxc["price"]
+            rt_src_zjxc = snapshot_zjxc["source"]
+        if snapshot_xys is not None:
+            rt_xys = snapshot_xys["price"]
+            rt_src_xys = snapshot_xys["source"]
+        if snapshot_zjxc is not None and snapshot_xys is not None:
+            df.loc[pd.to_datetime(today)] = [rt_zjxc, rt_xys]
             df = df.sort_index()
-            if rt_zjxc is not None and rt_xys is not None:
-                realtime_status = "是"
-            else:
-                realtime_status = "部分"
+            realtime_status = "是"
+        elif snapshot_zjxc is not None or snapshot_xys is not None:
+            realtime_status = "部分"
+
+    if snapshot_zjxc is None or snapshot_xys is None:
+        return "<h2>获取最新价格/总市值失败（实时源异常），请稍后重试。</h2>"
 
     latest_zjxc_price = df["zjxc_close"].iloc[-1]
     latest_xys_price = df["xys_close"].iloc[-1]
     data_date = df.index[-1].strftime("%Y-%m-%d")
 
-    if ZJXC_SHARES is not None and XYS_SHARES is not None:
-        zjxc_shares = ZJXC_SHARES
-        xys_shares = XYS_SHARES
-    else:
-        zjxc_shares = ZJXC_MARKET_CAP / latest_zjxc_price
-        xys_shares = XYS_MARKET_CAP / latest_xys_price
+    zjxc_shares = snapshot_zjxc.get("total_shares")
+    xys_shares = snapshot_xys.get("total_shares")
+    if zjxc_shares is None or xys_shares is None:
+        return "<h2>获取总股本失败，无法计算实际市值比例，请稍后重试。</h2>"
 
     df["zjxc_mv"] = df["zjxc_close"] * zjxc_shares
     df["xys_mv"] = df["xys_close"] * xys_shares
+    latest_idx = df.index[-1]
+    if latest_idx.date() == today:
+        df.at[latest_idx, "zjxc_mv"] = snapshot_zjxc["total_market_cap"]
+        df.at[latest_idx, "xys_mv"] = snapshot_xys["total_market_cap"]
     df["ratio"] = df["xys_mv"] / df["zjxc_mv"]
     df["discount"] = df["ratio"] * 10
+
+    latest_ratio = df["ratio"].iloc[-1]
+    latest_discount = df["discount"].iloc[-1]
+    latest_zjxc_mv = df["zjxc_mv"].iloc[-1]
+    latest_xys_mv = df["xys_mv"].iloc[-1]
 
     fig, period_cards, default_period = _build_chart(df)
     chart_config = {
@@ -490,6 +518,9 @@ def _build_page():
     generated_at = end_date.strftime("%Y-%m-%d %H:%M:%S")
     data_source = f"{source_zjxc} / {source_xys}"
     realtime_source = f"{rt_src_zjxc}/{rt_src_xys}"
+    zjxc_quote_time = snapshot_zjxc.get("quote_time") or generated_at
+    xys_quote_time = snapshot_xys.get("quote_time") or generated_at
+    cap_note = "历史市值按实时总股本 x 日线收盘价计算，最新点按实时总市值落点"
 
     return f"""
 <!doctype html>
@@ -538,6 +569,13 @@ def _build_page():
       padding: 10px 12px;
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
     }}
+    .snapshot-note {{ margin-top: 10px; color: var(--muted); font-size: 12.4px; line-height: 1.5; }}
+    .snapshot-grid {{ margin-top: 12px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }}
+    .snapshot-item {{ background: #ffffff; border: 1px solid #d8e1f5; border-radius: 10px; padding: 10px; }}
+    .snapshot-k {{ font-size: 12px; color: #66758f; font-weight: 700; }}
+    .snapshot-v {{ margin-top: 4px; font-size: 21px; line-height: 1.15; font-weight: 800; letter-spacing: 0.2px; color: #1e3563; }}
+    .snapshot-sub {{ margin-top: 4px; font-size: 12px; color: #58657d; line-height: 1.55; }}
+    .snapshot-sub strong {{ color: #26395f; }}
     .summary-top {{ display: flex; align-items: center; justify-content: space-between; gap: 8px; }}
     .summary-title {{ font-size: 13px; color: #3e4c67; font-weight: 700; }}
     .summary-period {{ font-size: 12px; color: #29406c; background: #e8efff; border: 1px solid #c7d7fa; border-radius: 999px; padding: 3px 10px; font-weight: 700; }}
@@ -562,6 +600,11 @@ def _build_page():
       .title {{ font-size: 24px; line-height: 1.3; max-width: 100%; }}
       .meta-row {{ display: grid; grid-template-columns: 1fr; font-size: 12.8px; gap: 2px; }}
       .summary-panel {{ padding: 10px; }}
+      .snapshot-grid {{ grid-template-columns: 1fr; gap: 6px; }}
+      .snapshot-item {{ padding: 8px; }}
+      .snapshot-k {{ font-size: 11.5px; }}
+      .snapshot-v {{ font-size: 18px; }}
+      .snapshot-sub {{ font-size: 11px; }}
       .summary-title {{ font-size: 12.5px; }}
       .summary-period {{ font-size: 11.5px; padding: 2px 8px; }}
       .summary-grid {{ gap: 6px; }}
@@ -588,6 +631,36 @@ def _build_page():
       <div>生成时间：{generated_at}</div>
       <div>日线来源：{data_source}</div>
       <div>实时来源：{realtime_source}</div>
+    </div>
+    <div class=\"summary-panel\">
+      <div class=\"summary-top\">
+        <div class=\"summary-title\">最新实际数据</div>
+        <div class=\"summary-period\">实时总市值口径</div>
+      </div>
+      <div class=\"snapshot-note\">{cap_note}</div>
+      <div class=\"snapshot-grid\">
+        <div class=\"snapshot-item\">
+          <div class=\"snapshot-k\">中际旭创</div>
+          <div class=\"snapshot-v\">{latest_zjxc_price:.2f} 元</div>
+          <div class=\"snapshot-sub\"><strong>总市值：</strong>{latest_zjxc_mv:.2f} 亿</div>
+          <div class=\"snapshot-sub\"><strong>总股本：</strong>{zjxc_shares:.4f} 亿股</div>
+          <div class=\"snapshot-sub\"><strong>行情时间：</strong>{zjxc_quote_time}</div>
+        </div>
+        <div class=\"snapshot-item\">
+          <div class=\"snapshot-k\">新易盛</div>
+          <div class=\"snapshot-v\">{latest_xys_price:.2f} 元</div>
+          <div class=\"snapshot-sub\"><strong>总市值：</strong>{latest_xys_mv:.2f} 亿</div>
+          <div class=\"snapshot-sub\"><strong>总股本：</strong>{xys_shares:.4f} 亿股</div>
+          <div class=\"snapshot-sub\"><strong>行情时间：</strong>{xys_quote_time}</div>
+        </div>
+        <div class=\"snapshot-item\">
+          <div class=\"snapshot-k\">实际比例</div>
+          <div class=\"snapshot-v\">{latest_ratio:.4f}</div>
+          <div class=\"snapshot-sub\"><strong>折数：</strong>{latest_discount:.2f} 折</div>
+          <div class=\"snapshot-sub\"><strong>口径：</strong>新易盛总市值 / 中际旭创总市值</div>
+          <div class=\"snapshot-sub\"><strong>来源：</strong>{realtime_source}</div>
+        </div>
+      </div>
     </div>
     <div class=\"summary-panel\">
       <div class=\"summary-top\">

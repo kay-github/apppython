@@ -9,14 +9,17 @@ app_port: 7860
 
 # 新易盛 / 中际旭创 市值比例图
 
-这是一个基于 FastAPI 的 Hugging Face Docker Space，提供单页可视化，展示两只 A 股在最近一年内的市值比例与折扣（`ratio * 10`）。
+这是一个基于 FastAPI 的 Hugging Face Docker Space，提供单页可视化，展示两只 A 股在最近一年内的市值比例与折扣（`ratio * 10`）。最新点使用实时价格和实时总市值，历史区间使用实时总股本乘日线收盘价计算市值。
 
 ## 功能概览
 - 拉取最近一年的日线收盘价并对齐日期。
-- 可启用实时行情补齐当天数据：任一股票实时价成功都会写入当天记录，另一只使用最新日线收盘价兜底。
+- 可启用实时行情补齐当天数据：仅在两只股票的实时价格和实时总市值都成功时写入当天记录。
+- 页面展示最新实际数据卡片：实时价格、总市值、总股本、实际比例。
 - 计算市值序列、比例与折扣：
-  - `zjxc_mv = zjxc_close * zjxc_shares`
-  - `xys_mv = xys_close * xys_shares`
+  - 历史：`zjxc_mv = zjxc_close * zjxc_total_shares`
+  - 历史：`xys_mv = xys_close * xys_total_shares`
+  - 最新：`zjxc_mv = zjxc_realtime_total_market_cap`
+  - 最新：`xys_mv = xys_realtime_total_market_cap`
   - `ratio = xys_mv / zjxc_mv`
   - `discount = ratio * 10`
 - 输出 Plotly 交互图，支持“近1周/近1月/近1季/近半年/近1年”区间按钮。
@@ -28,15 +31,11 @@ app_port: 7860
   1. 东方财富日线
   2. 新浪日线
 - 实时数据（按顺序回退）：
-  1. 东方财富实时
-  2. 新浪实时
-  3. 腾讯实时
+  1. 腾讯实时（价格、总市值、总股本）
+  2. 东方财富实时（价格、总市值）
 
 ## 关键配置（`app.py`）
 - 股票代码：`ZJXC_CODE`、`XYS_CODE`
-- 市值锚点（亿元）：`ZJXC_MARKET_CAP`、`XYS_MARKET_CAP`
-- 显式股本（亿股）：`ZJXC_SHARES`、`XYS_SHARES`
-  - 仅当两者都非 `None` 时，才覆盖市值锚点反推逻辑
 - 实时开关：`USE_REALTIME`
 - 重试参数：`FETCH_RETRY`、`RETRY_DELAY_SECONDS`
 - 新浪拉取条数：`SINA_DATALEN`
