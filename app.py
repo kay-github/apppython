@@ -374,6 +374,7 @@ def _build_chart(df: pd.DataFrame):
         xaxis=dict(
             title=None,
             range=[default_detail["start"], end_date],
+            fixedrange=True,
             showgrid=False,
             tickfont=dict(size=11, color="#50627d"),
             tickformat="%Y-%m",
@@ -383,11 +384,13 @@ def _build_chart(df: pd.DataFrame):
         yaxis=dict(
             title="折扣（折）",
             range=default_detail["y_range"],
+            fixedrange=True,
             gridcolor="#e8eef9",
             zeroline=False,
             tickfont=dict(size=11, color="#50627d"),
             title_font=dict(size=12, color="#5f7090"),
         ),
+        dragmode=False,
         hovermode="x unified",
         showlegend=False,
         template="plotly_white",
